@@ -3,6 +3,8 @@ from pydantic import BaseModel
 from typing import Optional
 import uuid
 import logging
+import asyncio
+import time
 from jose import JWTError, jwt
 from core.orchestrator import Orchestrator
 from core.session import session_manager
@@ -80,20 +82,77 @@ async def websocket_chat(
     await websocket.accept()
     logger.info(f"WebSocket connected for session {session_id}")
 
+    # Send initial ready signal so Flutter stops showing "Connecting..."
+    try:
+        await websocket.send_json({"type": "connected", "session_id": session_id})
+    except Exception:
+        pass
+
+    last_ping = time.time()
+    PING_INTERVAL = 30  # seconds
+
     try:
         while True:
-            data = await websocket.receive_json()
-            user_message = data.get("message", "")
-            voice_mode = data.get("voice_mode", False)
+            # Non-blocking receive with timeout for heartbeat
+            try:
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=PING_INTERVAL)
+            except asyncio.TimeoutError:
+                # Send ping to keep connection alive on Railway (30s idle timeout)
+                try:
+                    await websocket.send_json({"type": "ping", "ts": time.time()})
+                    logger.debug("WS ping sent | session=%s", session_id)
+                except Exception:
+                    logger.info("WS ping failed — client gone | session=%s", session_id)
+                    break
+                continue
 
-            logger.info(f"Received message from {email}: {user_message[:50]}...")
+            msg_type = data.get("type", "message")
 
-            async for chunk in orchestrator.stream(user_message, session_id, voice_mode):
-                await websocket.send_text(chunk)
+            # Handle pong from client
+            if msg_type == "pong":
+                last_ping = time.time()
+                continue
+
+            # Handle chat message
+            if msg_type == "message":
+                user_message = data.get("message", "")
+                voice_mode = data.get("voice_mode", False)
+
+                logger.info(f"Received message from {email}: {user_message[:50]}...")
+
+                # Send thinking indicator
+                try:
+                    await websocket.send_json({"type": "tool_start", "tool": "ai"})
+                except Exception:
+                    pass
+
+                try:
+                    # AI call with timeout (30s max)
+                    async for chunk in orchestrator.stream(user_message, session_id, voice_mode):
+                        await websocket.send_text(chunk)
+                except asyncio.TimeoutError:
+                    logger.error("AI API timed out | session=%s", session_id)
+                    await websocket.send_json({
+                        "type": "error",
+                        "content": "AI service timed out. Please retry."
+                    })
+                except Exception as e:
+                    logger.error("AI streaming error | session=%s | %s", session_id, e)
+                    await websocket.send_json({
+                        "type": "error",
+                        "content": "AI service unavailable. Please retry."
+                    })
+
+            else:
+                await websocket.send_json({"type": "error", "message": f"Unknown type: {msg_type}"})
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for session {session_id}")
     except Exception as e:
-        logger.error(f"WebSocket error for session {session_id}: {e}")
+        logger.error(f"WebSocket error for session {session_id}: {e}", exc_info=True)
+        try:
+            await websocket.close(code=1011)  # Internal error
+        except Exception:
+            pass
     finally:
-        pass
+        logger.info(f"WS cleanup done | session={session_id}")

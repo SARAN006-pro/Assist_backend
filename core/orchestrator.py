@@ -1,6 +1,7 @@
 from typing import Dict, Any, AsyncGenerator, List
 import json
 import logging
+import asyncio
 from openai import AsyncOpenAI
 from core.session import session_manager
 from core.tools import tool_registry
@@ -72,13 +73,22 @@ class Orchestrator:
         tools = tool_registry.get_claude_definitions()
 
         try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
-                tools=tools,
-                stream=True
+            # AI call with 30s timeout to prevent hanging
+            response = await asyncio.wait_for(
+                self.client.chat.completions.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+                    tools=tools,
+                    stream=True
+                ),
+                timeout=30.0
             )
+        except asyncio.TimeoutError:
+            logger.error("AI API timed out after 30s")
+            yield json.dumps({"type": "error", "content": "AI service timed out. Please retry."})
+            yield json.dumps({"type": "done"})
+            return
         except Exception as e:
             logger.error(f"Claude API error: {e}")
             yield json.dumps({"type": "error", "content": f"AI service error: {str(e)}"})
@@ -145,11 +155,15 @@ class Orchestrator:
                 })
 
             try:
-                follow_up = await self.client.chat.completions.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
-                    stream=True
+                # Follow-up AI call with 30s timeout
+                follow_up = await asyncio.wait_for(
+                    self.client.chat.completions.create(
+                        model=self.model,
+                        max_tokens=self.max_tokens,
+                        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + messages,
+                        stream=True
+                    ),
+                    timeout=30.0
                 )
 
                 async for chunk in follow_up:
@@ -158,6 +172,8 @@ class Orchestrator:
                         if delta.content:
                             text_content.append(delta.content)
                             yield json.dumps({"type": "text", "content": delta.content})
+            except asyncio.TimeoutError:
+                logger.error("Follow-up AI call timed out")
             except Exception as e:
                 logger.error(f"Follow-up AI call failed: {e}")
 
