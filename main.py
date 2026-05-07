@@ -53,7 +53,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Audit database initialization failed: {e}. Continuing without audit logging.")
 
-    await auth.init_users_db()
+    # Initialize users database (non-critical)
+    try:
+        await auth.init_users_db()
+        logger.info("Users database initialized")
+    except Exception as e:
+        logger.warning(f"Users database initialization failed: {e}. Continuing without user auth.")
+
     logger.info(f"ARIA backend started (model: {settings.GROQ_MODEL})")
     yield
     await session_manager.close()
@@ -67,6 +73,26 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Health endpoint - registered FIRST for Railway health check
+@app.get("/health")
+async def health():
+    redis_status = "disconnected"
+    if session_manager.is_available:
+        try:
+            await session_manager.redis.ping()
+            redis_status = "connected"
+        except Exception as e:
+            logger.warning(f"Health check Redis error: {e}")
+
+    return {
+        "status": "online",
+        "service": "ARIA",
+        "redis": redis_status,
+        "model": settings.GROQ_MODEL,
+        "version": "1.0.0",
+        "environment": settings.APP_ENV
+    }
+
 # Add request ID middleware
 @app.middleware("http")
 async def add_request_id(request: Request, call_next):
@@ -75,13 +101,7 @@ async def add_request_id(request: Request, call_next):
     response.headers["X-Request-ID"] = request.state.request_id
     return response
 
-# Setup security middleware
-setup_security_middleware(app)
-
-# Add production middleware (exception handling, request tracing)
-app.add_middleware(ProductionMiddleware)
-
-# CORS configuration
+# CORS configuration - ADD BEFORE OTHER MIDDLEWARE
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.get_cors_origins(),
@@ -90,6 +110,13 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
+# Setup security middleware
+setup_security_middleware(app)
+
+# Add production middleware (exception handling, request tracing)
+app.add_middleware(ProductionMiddleware)
+
+# Include routers
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(system.router, prefix="/system", tags=["system"])
@@ -131,26 +158,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             "request_id": request_id,
         },
     )
-
-
-@app.get("/health")
-async def health():
-    redis_status = "disconnected"
-    if session_manager.is_available:
-        try:
-            await session_manager.redis.ping()
-            redis_status = "connected"
-        except Exception as e:
-            logger.warning(f"Health check Redis error: {e}")
-
-    return {
-        "status": "online",
-        "service": "ARIA",
-        "redis": redis_status,
-        "model": settings.GROQ_MODEL,
-        "version": "1.0.0",
-        "environment": settings.APP_ENV
-    }
 
 
 if __name__ == "__main__":

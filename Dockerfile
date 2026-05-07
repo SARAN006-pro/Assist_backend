@@ -16,9 +16,6 @@ RUN pip install --upgrade pip setuptools wheel && \
 
 COPY . .
 
-RUN useradd --create-home --shell /bin/bash appuser && chown -R appuser:appuser /app
-USER appuser
+EXPOSE 8000
 
-EXPOSE $PORT
-
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "$PORT"]
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
