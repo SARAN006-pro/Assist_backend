@@ -1,11 +1,9 @@
-from .claude_orchestrator import ClaudeOrchestrator
-from .tool_registry import ToolRegistry
-from .session_manager import SessionManager
-from .event_bus import EventBus
+from .orchestrator import Orchestrator
+from .session import session_manager
+from .tools import tool_registry
 
 __all__ = [
-    "ClaudeOrchestrator",
-    "ToolRegistry",
-    "SessionManager",
-    "EventBus",
+    "Orchestrator",
+    "session_manager",
+    "tool_registry",
 ]
