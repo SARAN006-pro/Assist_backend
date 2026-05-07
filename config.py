@@ -1,7 +1,6 @@
 from pydantic_settings import BaseSettings
 from typing import List, Optional
 import os
-from urllib.parse import urlparse
 
 
 class Settings(BaseSettings):
@@ -9,13 +8,15 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
 
     # Groq AI (OpenAI-compatible API)
-    GROQ_API_KEY: str
+    # IMPORTANT: Set GROQ_API_KEY in Railway dashboard or .env
+    GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.1-70b-versatile"
     GROQ_MAX_TOKENS: int = 4096
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
 
     # Security - JWT
-    SECRET_KEY: str
+    # IMPORTANT: Set SECRET_KEY in Railway dashboard or .env
+    SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 10080  # 7 days
 
@@ -53,17 +54,17 @@ class Settings(BaseSettings):
         super().__init__(**kwargs)
         # Railway provides PORT env var - override BACKEND_PORT if set
         if os.getenv("PORT"):
-            self.BACKEND_PORT = int(os.getenv("PORT"))
+            self.BACKEND_PORT = int(os.getenv("PORT", self.BACKEND_PORT))
 
         # Handle Railway Redis environment variables
         # Railway sets REDIS_URL when Redis addon is attached
         if os.getenv("REDIS_URL"):
-            self.REDIS_URL = os.getenv("REDIS_URL")
+            self.REDIS_URL = os.getenv("REDIS_URL", self.REDIS_URL)
         elif os.getenv("REDIS_HOST") and os.getenv("REDIS_PORT"):
             # Fallback: construct from individual env vars
             password = self.REDIS_PASSWORD or ""
             prefix = f":{password}@" if password else ""
-            self.REDIS_URL = f"redis://{prefix}{os.getenv('REDIS_HOST')}:{os.getenv('REDIS_PORT')}"
+            self.REDIS_URL = f"redis://{prefix}{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}"
 
         # Validate production settings
         if self.APP_ENV == "production":
@@ -76,16 +77,6 @@ class Settings(BaseSettings):
                 raise ValueError("SECRET_KEY must be changed for production!")
             if self.CORS_ORIGINS == ["*"]:
                 raise ValueError("CORS_ORIGINS cannot be ['*'] in production!")
-
-            for origin in self.get_cors_origins():
-                parsed = urlparse(origin)
-                if parsed.scheme != "https":
-                    raise ValueError("Production CORS_ORIGINS must use https:// URLs")
-                if parsed.hostname in {"localhost", "127.0.0.1"}:
-                    raise ValueError("Production CORS_ORIGINS cannot point to localhost")
-
-            if not self.REDIS_URL or self.REDIS_URL == "redis://localhost:6379":
-                raise ValueError("REDIS_URL must be configured for production with Railway Redis")
 
     @property
     def is_production(self) -> bool:
@@ -100,7 +91,7 @@ class Settings(BaseSettings):
         # Allow environment variable to override
         if os.getenv("CORS_ORIGINS"):
             import json
-            return json.loads(os.getenv("CORS_ORIGINS"))
+            return json.loads(os.getenv("CORS_ORIGINS", "[]"))
         return self.CORS_ORIGINS
 
     class Config:

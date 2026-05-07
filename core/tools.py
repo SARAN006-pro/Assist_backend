@@ -9,8 +9,6 @@ from tools.web_search import WebSearchTool
 from tools.code_executor import CodeExecutorTool
 from tools.system_monitor import SystemMonitorTool
 from tools.process_manager import ProcessManagerTool
-from tools.docker_tool import DockerTool
-from tools.nginx_tool import NginxTool
 
 
 class ToolRegistry:
@@ -21,8 +19,6 @@ class ToolRegistry:
             "code_executor": CodeExecutorTool(),
             "system_monitor": SystemMonitorTool(),
             "process_manager": ProcessManagerTool(),
-            "docker_control": DockerTool(),
-            "nginx_control": NginxTool(),
         }
         self.db_path = Path(__file__).parent.parent / "aria_audit.db"
 
