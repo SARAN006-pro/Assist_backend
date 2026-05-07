@@ -1,13 +1,13 @@
 {
   "$schema": "https://railway.app/schema.json",
   "build": {
-    "builder": "DOCKERFILE"
+    "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}",
+    "startCommand": "python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1",
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 120,
+    "healthcheckTimeout": 180,
     "restartPolicyType": "on_failure",
-    "restartPolicyMaxRetries": 10
+    "restartPolicyMaxRetries": 5
   }
 }
