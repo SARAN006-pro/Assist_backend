@@ -1,0 +1,48 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+env.bak/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Data and logs
+*.log
+*.db
+*.sqlite
+logs/
+
+# Secrets
+*.pem
+*.key
+id_rsa
+credentials.json
+service-account.json
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Optional - avoid monorepo files
+flutter_app/
+flutter_app_backup/
+infra/
+docker-compose.yml
+scripts/
