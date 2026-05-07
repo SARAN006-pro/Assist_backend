@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 from typing import List, Optional
 import os
+from urllib.parse import urlparse
 
 
 class Settings(BaseSettings):
@@ -75,6 +76,16 @@ class Settings(BaseSettings):
                 raise ValueError("SECRET_KEY must be changed for production!")
             if self.CORS_ORIGINS == ["*"]:
                 raise ValueError("CORS_ORIGINS cannot be ['*'] in production!")
+
+            for origin in self.get_cors_origins():
+                parsed = urlparse(origin)
+                if parsed.scheme != "https":
+                    raise ValueError("Production CORS_ORIGINS must use https:// URLs")
+                if parsed.hostname in {"localhost", "127.0.0.1"}:
+                    raise ValueError("Production CORS_ORIGINS cannot point to localhost")
+
+            if not self.REDIS_URL or self.REDIS_URL == "redis://localhost:6379":
+                raise ValueError("REDIS_URL must be configured for production with Railway Redis")
 
     @property
     def is_production(self) -> bool:
