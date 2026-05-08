@@ -1,4 +1,22 @@
+"""
+main.py
+=======
+ARIA Backend FastAPI Application Entry Point.
+
+This is the file Railway executes via:
+  uvicorn main:app --host 0.0.0.0 --port $PORT
+
+COMMON RAILWAY DEPLOYMENT FIXES:
+  1. PORT binding: Always use os.getenv("PORT") — never hardcode 8000
+  2. Import crashes: All imports wrapped so missing packages log, not crash
+  3. Startup errors: Lifespan catches all errors, backend stays alive
+  4. Health check: GET / responds in <100ms with no dependencies
+  5. CORS: Configured for mobile + web clients
+  6. Missing env vars: Config validates with warnings, not exceptions
+"""
+
 import logging
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -8,31 +26,59 @@ from fastapi.responses import JSONResponse
 import aiosqlite
 from pathlib import Path
 
-from api import auth, chat, system, voice
-from api.security import setup_security_middleware
-from core.session import session_manager
+# Import settings early for logging config
 from config import settings
-from middleware import ProductionMiddleware
 
+# Network_backend logging pattern - configure BEFORE any other imports
 logging.basicConfig(
+    stream=sys.stdout,
     level=getattr(logging, settings.LOG_LEVEL),
-    format='[%(asctime)s] %(levelname)s - %(name)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+    force=True,
 )
-logger = logging.getLogger("aria")
+logger = logging.getLogger("aria.main")
+
+# Wrap imports so broken modules don't kill the whole app
+try:
+    from api import auth, chat, system, voice
+    from api.security import setup_security_middleware
+    logger.info("✅ API routers loaded")
+except Exception as e:
+    logger.error("❌ API router load failed: %s", e, exc_info=True)
+
+try:
+    from core.session import session_manager
+    logger.info("✅ Session manager loaded")
+except Exception as e:
+    logger.error("❌ Session manager load failed: %s", e)
+    session_manager = None  # type: ignore
+
+try:
+    from middleware import ProductionMiddleware
+    logger.info("✅ Production middleware loaded")
+except Exception as e:
+    logger.error("❌ Middleware load failed: %s", e)
+    ProductionMiddleware = None  # type: ignore
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"Starting ARIA backend (env: {settings.APP_ENV})...")
-    logger.info(f"Security: rate_limit={settings.RATE_LIMIT_ENABLED}, cors={settings.CORS_ORIGINS}")
+    # ── STARTUP ───────────────────────────────────────────────────────────────
+    logger.info("=" * 60)
+    logger.info("🚀 %s v%s starting up", settings.APP_NAME, settings.APP_VERSION)
+    logger.info("   Environment : %s", settings.APP_ENV)
+    logger.info("   Host:Port   : %s:%s", settings.BACKEND_HOST, settings.BACKEND_PORT)
+    logger.info("   Debug       : %s", settings.DEBUG)
+    logger.info("=" * 60)
 
-    # Redis connection with graceful failure
-    try:
-        await session_manager.connect()
-        logger.info("Redis connected")
-    except Exception as e:
-        logger.warning(f"Redis connection failed: {e}. Running without session persistence.")
+    # Redis connection with graceful failure (Network_backend pattern)
+    if session_manager:
+        try:
+            await session_manager.connect()
+            logger.info("✅ Redis connected")
+        except Exception as e:
+            logger.warning("⚠️  Redis connection failed: %s. Running without session persistence.", e)
 
     # Initialize audit database (non-critical, should not crash)
     try:
@@ -49,72 +95,78 @@ async def lifespan(app: FastAPI):
                 )
             """)
             await db.commit()
-        logger.info("Audit database initialized")
+        logger.info("✅ Audit database initialized")
     except Exception as e:
-        logger.warning(f"Audit database initialization failed: {e}. Continuing without audit logging.")
+        logger.warning("⚠️  Audit database initialization failed: %s. Continuing without audit logging.", e)
 
     # Initialize users database (non-critical)
     try:
         await auth.init_users_db()
-        logger.info("Users database initialized")
+        logger.info("✅ Users database initialized")
     except Exception as e:
-        logger.warning(f"Users database initialization failed: {e}. Continuing without user auth.")
+        logger.warning("⚠️  Users database initialization failed: %s. Continuing without user auth.", e)
 
-    logger.info(f"ARIA backend started (model: {settings.GROQ_MODEL})")
+    logger.info("✅ ARIA startup complete — ready to serve requests (model: %s)", settings.GROQ_MODEL)
     yield
-    await session_manager.close()
-    logger.info("ARIA backend stopped")
+
+    # ── SHUTDOWN ──────────────────────────────────────────────────────────────
+    logger.info("🛑 ARIA shutting down…")
+    if session_manager:
+        await session_manager.close()
+    logger.info("👋 ARIA shutdown complete")
 
 
+# ── App factory ───────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="ARIA API",
-    version="1.0.0",
-    description="Autonomous Resource & Intelligence Assistant",
+    title=settings.APP_NAME,
+    version=settings.APP_VERSION,
+    description="ARIA — Autonomous Resource & Intelligence Assistant",
     lifespan=lifespan,
+    redoc_url=None,
+    docs_url="/docs" if settings.DEBUG else None,
 )
 
-# Health endpoint - registered FIRST for Railway health check
+
+# ── Health endpoint (Network_backend pattern - fast, no dependencies) ─────────
+@app.get("/")
 @app.get("/health")
 async def health():
     redis_status = "disconnected"
-    if session_manager.is_available:
+    if session_manager and session_manager.is_available:
         try:
             await session_manager.redis.ping()
             redis_status = "connected"
         except Exception as e:
-            logger.warning(f"Health check Redis error: {e}")
+            logger.warning("Health check Redis error: %s", e)
 
     return {
-        "status": "online",
-        "service": "ARIA",
+        "status": "ok",
+        "version": settings.APP_VERSION,
+        "environment": settings.APP_ENV,
         "redis": redis_status,
-        "model": settings.GROQ_MODEL,
-        "version": "1.0.0",
-        "environment": settings.APP_ENV
     }
 
-# Add request ID middleware
-@app.middleware("http")
-async def add_request_id(request: Request, call_next):
-    request.state.request_id = str(uuid.uuid4())
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request.state.request_id
-    return response
 
-# CORS configuration - ADD BEFORE OTHER MIDDLEWARE
+# ── CORS configuration (Network_backend pattern) ───────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.get_cors_origins(),
-    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    allow_origins=settings.get_cors_origins() if settings.get_cors_origins() != ["*"] else ["*"],
+    allow_credentials=False,  # MUST be False when allow_origins=["*"]
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["*"],
+    expose_headers=["X-Request-ID", "X-Process-Time"],
+    max_age=3600,
 )
 
 # Setup security middleware
-setup_security_middleware(app)
+try:
+    setup_security_middleware(app)
+except Exception as e:
+    logger.warning("⚠️  Security middleware setup failed: %s", e)
 
 # Add production middleware (exception handling, request tracing)
-app.add_middleware(ProductionMiddleware)
+if ProductionMiddleware:
+    app.add_middleware(ProductionMiddleware)
 
 # Include routers
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
